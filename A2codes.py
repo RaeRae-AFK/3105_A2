@@ -1,3 +1,8 @@
+#Rachel Chung
+#1010333019
+#Sheethal Thachet
+#101
+
 import numpy as np
 import pandas as pd
 from scipy.optimize import minimize
