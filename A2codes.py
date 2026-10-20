@@ -89,7 +89,8 @@ def synExperimentsRegularize():
 
 #----------------------------------
 # Question 2
-
+#s
+print("h")
 
 #-------------------------------------
 # Question 3
