@@ -1,12 +1,12 @@
 #Rachel Chung
 #1010333019
 #Sheethal Thachet
-#101
+#101332602
 
 import numpy as np
 import pandas as pd
 from scipy.optimize import minimize
-from A2helpers import generateData
+from A2helpers import generateData, linearKernel, polyKernel, gaussKernel
 import cvxopt
 
 #Question 1a
@@ -62,7 +62,7 @@ def synExperimentsRegularize():
     train_acc_hinge = np.zeros([len(lamb_list), len(gen_model_list), n_runs])
     test_acc_hinge = np.zeros([len(lamb_list), len(gen_model_list), n_runs])
 
-    np.random.seed(0)
+    np.random.seed(51)
 
     def acc(X, y, w, w0):
         return np.mean(classify(X, w, w0).ravel() == y.ravel())
@@ -89,8 +89,127 @@ def synExperimentsRegularize():
 
 #----------------------------------
 # Question 2
-#s
-print("h")
+#Test
+#print("h")
+
+#2a: adjoint form of regularized squared hinge lkoss
+def adjSqHinge(X, y, lamb, kernel_func):
+    n = X.shape[0]
+    #Flattening the labels to shape (n,) 
+    y = y.reshape(-1).astype(float)
+    #nxn kernel matrix of the training data
+    K = kernel_func(X, X)
+
+    #Returning the loss value and its gradient so that the optimizer doesn't have to estimate gradients numerically
+    def obj(theta):
+        #takes all parameters into one vector
+        a, a0 = theta[:n], theta[n]
+
+        #Score of each traning point (before a0)
+        Ka = K @ a
+        #Hinge residual max per point
+        r = np.maximum(0, 1 - y * (Ka + a0))
+
+        #Squaring hinge loss + regularizer (lamb/2) a^T K a
+        f = np.sum(r ** 2) + 0.5 * lamb * a @ Ka
+
+        #Greadients
+        g_a = -2 * K @ (r * y) + lamb * Ka
+        g_a0 = -2 * np.sum(r * y)
+
+        return f, np.append(g_a, g_a0)
+
+    #Starting from all 0's --> jac=True will tell the scipy tha obj also returns the gradient
+    res = minimize(obj, np.zeros (n + 1), jac=True, method="L-BFGS-B")
+
+    #Unpacking the solution (a is an nx1 column vector, a0 is a scalar)
+    return res.x[:n].reshape(-1, 1), res.x[n]
+
+#2b: Regularized hinge loss, solved as a quadratic program
+def adjHinge(X, y, lamb, kernel_func, stabilizer=1e-5):
+    n = X.shape[0]
+    #Label is a nx1 col vector 
+    y = y.reshape(-1,1).astype(float)
+    #nxn kernel matric
+    K = kernel_func(X, X)
+
+    P = np.zeros((2 * n + 1, 2 * n + 1))
+    P[:n, :n] = lamb * K
+    P += stabilizer * np.eye(2 * n + 1)
+
+    #0 for a and a0, 1 fore each xi --> giving sum of xi
+    q = np.vstack([np.zeros((n + 1, 1)), np.ones((n, 1))])
+
+    #Constraint 1
+    G1 = np.hstack([np.zeros((n, n + 1)), -np.eye(n)])
+
+    #Constrint 2
+    G2 = np.hstack([-y * K, -y, -np.eye(n)])
+
+    #Stacking both contraints into one (G)
+    G = np.vstack([G1, G2])
+    h = np.vstack([np.zeros((n, 1)), -np.ones((n, 1))])
+
+    #Solving the QP
+    cvxopt.solvers.options["show_progress"] = False
+    sol = cvxopt.solvers.qp(cvxopt.matrix(P), cvxopt.matrix(q), cvxopt.matrix(G), cvxopt.matrix(h))
+    u = np.array(sol["x"])
+
+    #Returning a, a0 and xi is discarded
+    return u[:n], u[n, 0]
+
+#2c: Predict the labels for the test points using the adjoing model
+def adjClassify(Xtest, a, a0, X, kernel_func):
+    #one score per test point --> copmutes for all point at onec
+    z = kernel_func(Xtest, X) @ a.reshape(-1, 1) + a0
+
+    #convertng scores to labels (returns a mx1 vector)
+    return np.where(z >= 0, 1, -1).reshape(-1, 1)
+
+#2d: Compare 5 kernels x 3 datasets x 2 losses, averaged over 10 runs
+def synExperimentsKernel():
+    n_runs = 10
+    n_train = 100
+    n_test = 1000
+    lamb = 0.001
+
+    #Each kernel is wrapped as a function of (X1, X2) (so they can be called the same wasy)
+    kernel_list = [linearKernel, lambda X1, X2: polyKernel(X1, X2, 2), lambda X1, X2: polyKernel(X1, X2, 3), lambda X1, X2: gaussKernel(X1, X2, 1.0), lambda X1, X2: gaussKernel(X1, X2, 0.5)]
+    gen_model_list = [1, 2, 3]
+
+    #Accuracy storage --> indexed as [kernel, dataset, run]
+    train_acc_sq_hinge = np.zeros([len(kernel_list), len(gen_model_list), n_runs])
+    test_acc_sq_hinge = np.zeros([len(kernel_list), len(gen_model_list), n_runs])
+    train_acc_hinge = np.zeros([len(kernel_list), len(gen_model_list), n_runs])
+    test_acc_hinge = np.zeros([len(kernel_list), len(gen_model_list), n_runs])
+
+    #Fixing the random seed so results are reproducible (we are group A2-51)
+    np.random.seed(51)
+
+    #Helper: fraction of points whose predictied label matches the true label
+    def acc(Xeval, yeval, a, a0, Xtrain, kernel):
+        return np.mean(adjClassify(Xeval, a, a0, Xtrain, kernel).ravel() == yeval.ravel())
+
+    for r in range(n_runs):
+        for i, kernel in enumerate(kernel_list):
+            for j, gen_model in enumerate(gen_model_list):
+                Xtrain, ytrain = generateData(n=n_train, gen_model=gen_model)
+                Xtest, ytest = generateData(n=n_test, gen_model=gen_model)
+
+                #Squared hinge model: train, then measuring train an test accuracy
+                a, a0 = adjSqHinge(Xtrain, ytrain, lamb, kernel)
+                train_acc_sq_hinge[i, j, r] = acc(Xtrain, ytrain, a, a0, Xtrain, kernel)
+                test_acc_sq_hinge[i, j, r] = acc(Xtest, ytest, a, a0, Xtrain, kernel)
+
+                #Hinge model: train, then measuring train and test accuracy
+                a, a0 = adjHinge(Xtrain, ytrain, lamb, kernel)
+                train_acc_hinge[i, j, r] = acc(Xtrain, ytrain, a, a0, Xtrain, kernel)
+                test_acc_hinge[i, j, r] = acc(Xtest, ytest, a, a0, Xtrain, kernel)
+
+    #Average over the runs, then placing SqHinge beside Hinge to give 5x6
+    train_acc = np.hstack([train_acc_sq_hinge.mean(axis=2), train_acc_hinge.mean(axis=2)])
+    test_acc = np.hstack([test_acc_sq_hinge.mean(axis=2), test_acc_hinge.mean(axis=2)])
+    return train_acc, test_acc
 
 #-------------------------------------
 # Question 3
@@ -133,7 +252,7 @@ def cvMnist(dataset_folder, lamb_list, kernel_list, k=5):
 
     cv_acc = np.zeros([k, len(lamb_list), len(kernel_list)])
 
-    np.random.seed(0)
+    np.random.seed(51)
     folds = np.array_split(np.random.permutation(X.shape[0]), k)
 
     for i, lamb in enumerate(lamb_list):
